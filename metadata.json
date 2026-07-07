@@ -1,0 +1,6 @@
+{
+  "name": "EurooMart Rider",
+  "description": "An interactive hyperlocal rider delivery app supporting multiple screens, proof-of-pickup viewfinder, COD wallet management, order dispatch simulation, and route navigation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
