@@ -22,3 +22,24 @@ export interface Transaction {
 }
 
 export type ScreenType = 'dashboard' | 'navigation' | 'pickup_verification' | 'final_step' | 'wallet' | 'profile' | 'earnings';
+
+export interface RiderProfile {
+  id: string;
+  name: string;
+  email: string | null;
+  avatar_url: string | null;
+  vehicle_type: string;
+  vehicle_model: string | null;
+  vehicle_number: string | null;
+  status: string;
+  cod_wallet: number;
+  today_deliveries: number;
+  today_earnings: number;
+  rating: number;
+  acceptance_rate: number;
+  weekly_online_hours: string;
+  driving_license_verified: boolean;
+  aadhaar_verified: boolean;
+  insurance_active: boolean;
+}
+

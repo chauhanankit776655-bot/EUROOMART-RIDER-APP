@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Order, Transaction, ScreenType } from './types';
+import { Order, Transaction, ScreenType, RiderProfile } from './types';
 import Dashboard from './components/Dashboard';
 import NavigationScreen from './components/NavigationScreen';
 import PickupVerification from './components/PickupVerification';
@@ -7,6 +7,7 @@ import FinalStep from './components/FinalStep';
 import WalletScreen from './components/WalletScreen';
 import ProfileScreen from './components/ProfileScreen';
 import EarningsScreen from './components/EarningsScreen';
+import { supabase, isSupabaseConfigured } from './supabaseClient';
 
 // Helper to generate dynamic, realistic pending orders
 const generateNewOrder = (customId?: string): Order => {
@@ -203,6 +204,60 @@ const initialCompletedOrders: Order[] = [
   }
 ];
 
+const initialRiderProfile: RiderProfile = {
+  id: 'R-8088',
+  name: 'Vikram Singh',
+  email: 'rider@euromart.com',
+  avatar_url: 'https://lh3.googleusercontent.com/aida-public/AB6AXuBY0P7NKiglTLw4dzxBgDcIosrtxAcAXC7IpwKyPDEN5XT9F_wQ5c0PzgT7fv7G_RoxXs7_UB37PCR_LBfqye8cBObUVm8mGhYcI9-KiS7pO3gDlcHkr9jh1NL4jH5jgNSgLtifSaYzITNGWHgFqv5SMeh_rMLts_64FBlCCf4jIGg6j71jx6JeqWKqI24N0D0o-zXYKqjYBLl1R66wvASqclsIrnxyUUC2cixTxpAMI9xEXIP06KBt',
+  vehicle_type: 'Motorcycle',
+  vehicle_model: 'Honda Activa 6G',
+  vehicle_number: 'KA-03-HA-1234',
+  status: 'Active',
+  cod_wallet: 3240,
+  today_deliveries: 12,
+  today_earnings: 845,
+  rating: 4.95,
+  acceptance_rate: 98.5,
+  weekly_online_hours: '34h 15m',
+  driving_license_verified: true,
+  aadhaar_verified: true,
+  insurance_active: true
+};
+
+const mapDbOrderToFrontend = (dbOrder: any): Order => {
+  return {
+    id: dbOrder.id,
+    customerName: dbOrder.customer_name,
+    pickupAddress: dbOrder.pickup_address,
+    dropAddress: dbOrder.drop_address,
+    distance: Number(dbOrder.distance),
+    estPayout: Number(dbOrder.est_payout),
+    codAmount: Number(dbOrder.cod_amount),
+    itemsCount: dbOrder.items_count,
+    estTime: dbOrder.est_time,
+    note: dbOrder.note || undefined,
+    status: dbOrder.status === 'Assigning' || dbOrder.status === 'Pending' ? 'pending' : dbOrder.status,
+  };
+};
+
+const mapDbTransactionToFrontend = (dbTx: any): Transaction => {
+  const timeStr = dbTx.created_at 
+    ? new Date(dbTx.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : 'Just now';
+  const dateStr = dbTx.created_at
+    ? new Date(dbTx.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })
+    : 'Today';
+  
+  return {
+    id: dbTx.id,
+    type: dbTx.type as 'cod_collected' | 'hub_submission',
+    orderId: dbTx.order_id || undefined,
+    details: dbTx.details,
+    time: `${dateStr}, ${timeStr}`,
+    amount: Number(dbTx.amount),
+  };
+};
+
 export default function App() {
   const [isOnline, setIsOnline] = useState<boolean>(true);
   const [todayEarnings, setTodayEarnings] = useState<number>(845);
@@ -213,6 +268,8 @@ export default function App() {
   
   const [activeOrder, setActiveOrder] = useState<Order | null>(null);
   const [pendingOrder, setPendingOrder] = useState<Order | null>(null);
+  const [riderProfile, setRiderProfile] = useState<RiderProfile>(initialRiderProfile);
+  const [rejectedOrderIds, setRejectedOrderIds] = useState<string[]>([]);
 
   // Hardcoded initial transactions matching the screens
   const [transactions, setTransactions] = useState<Transaction[]>([
@@ -246,11 +303,143 @@ export default function App() {
     },
   ]);
 
-  // Generate initial pending order when online
+  const fetchLatestOrders = useCallback(async () => {
+    if (!isSupabaseConfigured) return;
+    try {
+      // 1. Fetch active order
+      const { data: activeData, error: activeErr } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('rider_id', 'R-8088')
+        .in('status', ['accepted', 'arrived_at_pickup', 'picked_up'])
+        .maybeSingle();
+
+      if (activeErr) console.error("Error fetching active order:", activeErr);
+      else if (activeData) {
+        const order = mapDbOrderToFrontend(activeData);
+        setActiveOrder(order);
+        setPendingOrder(null);
+        if (order.status === 'accepted') setCurrentScreen('navigation');
+        else if (order.status === 'arrived_at_pickup') setCurrentScreen('pickup_verification');
+        else if (order.status === 'picked_up') setCurrentScreen('final_step');
+      } else {
+        // Only fetch pending orders if no active order is in progress
+        const { data: pendingData, error: pendingErr } = await supabase
+          .from('orders')
+          .select('*')
+          .in('status', ['Assigning', 'Pending'])
+          .is('rider_id', null)
+          .order('created_at', { ascending: false });
+
+        if (pendingErr) console.error("Error fetching pending order:", pendingErr);
+        else if (pendingData) {
+          const available = pendingData
+            .map(mapDbOrderToFrontend)
+            .filter((o) => !rejectedOrderIds.includes(o.id));
+          if (available.length > 0) {
+            setPendingOrder(available[0]);
+          } else {
+            setPendingOrder(null);
+          }
+        }
+      }
+
+      // 2. Fetch completed orders
+      const { data: completedData, error: completedErr } = await supabase
+        .from('orders')
+        .select('*')
+        .eq('rider_id', 'R-8088')
+        .eq('status', 'delivered')
+        .order('created_at', { ascending: false });
+
+      if (completedErr) console.error("Error fetching completed orders:", completedErr);
+      else if (completedData) {
+        setCompletedOrders(completedData.map(mapDbOrderToFrontend));
+      }
+    } catch (err) {
+      console.error("Error fetching orders:", err);
+    }
+  }, [rejectedOrderIds]);
+
+  const fetchRiderProfileAndTransactions = useCallback(async () => {
+    if (!isSupabaseConfigured) return;
+    try {
+      // 1. Fetch profile
+      const { data: profileData, error: profileErr } = await supabase
+        .from('riders')
+        .select('*')
+        .eq('id', 'R-8088')
+        .maybeSingle();
+
+      if (profileErr) {
+        console.error("Error fetching profile:", profileErr);
+      } else if (profileData) {
+        setRiderProfile(profileData as RiderProfile);
+        setTodayEarnings(Number(profileData.today_earnings));
+        setCompletedDeliveries(profileData.today_deliveries);
+        setCashInHand(Number(profileData.cod_wallet));
+        setIsOnline(profileData.status === 'Active');
+      }
+
+      // 2. Fetch transactions
+      const { data: txData, error: txErr } = await supabase
+        .from('rider_transactions')
+        .select('*')
+        .eq('rider_id', 'R-8088')
+        .order('created_at', { ascending: false });
+
+      if (txErr) {
+        console.error("Error fetching transactions:", txErr);
+      } else if (txData) {
+        setTransactions(txData.map(mapDbTransactionToFrontend));
+      }
+    } catch (err) {
+      console.error("Error fetching rider profile & transactions:", err);
+    }
+  }, []);
+
+  // Supabase initial load and realtime subscription
   useEffect(() => {
+    if (isSupabaseConfigured) {
+      fetchRiderProfileAndTransactions();
+      fetchLatestOrders();
+
+      const dbChannel = supabase
+        .channel('db-changes')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'orders' },
+          () => {
+            fetchLatestOrders();
+          }
+        )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'riders', filter: 'id=eq.R-8088' },
+          () => {
+            fetchRiderProfileAndTransactions();
+          }
+        )
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'rider_transactions', filter: 'rider_id=eq.R-8088' },
+          () => {
+            fetchRiderProfileAndTransactions();
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(dbChannel);
+      };
+    }
+  }, [fetchRiderProfileAndTransactions, fetchLatestOrders]);
+
+  // Generate initial pending order when online (Local Mock fallback loop)
+  useEffect(() => {
+    if (isSupabaseConfigured) return;
     if (isOnline && !activeOrder && !pendingOrder) {
       const timer = setTimeout(() => {
-        // First order matches Screen 5 (Indiranagar to Koramangala 4th Block, 4.2 km, ₹65 payout)
         setPendingOrder({
           id: 'ORD-8921',
           customerName: 'Rahul Sharma',
@@ -269,7 +458,22 @@ export default function App() {
     }
   }, [isOnline, activeOrder, pendingOrder]);
 
-  const handleAcceptOrder = useCallback((order: Order) => {
+  const handleToggleOnline = useCallback(async (online: boolean) => {
+    setIsOnline(online);
+    if (isSupabaseConfigured) {
+      try {
+        const { error } = await supabase
+          .from('riders')
+          .update({ status: online ? 'Active' : 'Offline' })
+          .eq('id', 'R-8088');
+        if (error) console.error("Error updating online status in Supabase:", error);
+      } catch (err) {
+        console.error("Failed to update status in Supabase:", err);
+      }
+    }
+  }, []);
+
+  const handleAcceptOrder = useCallback(async (order: Order) => {
     const accepted: Order = {
       ...order,
       status: 'accepted',
@@ -277,37 +481,87 @@ export default function App() {
     setActiveOrder(accepted);
     setPendingOrder(null);
     setCurrentScreen('navigation');
-  }, []);
 
-  const handleRejectOrder = useCallback(() => {
+    if (isSupabaseConfigured) {
+      try {
+        const { error } = await supabase
+          .from('orders')
+          .update({
+            status: 'accepted',
+            rider_id: 'R-8088',
+            rider_name: riderProfile.name,
+            rider_avatar: riderProfile.avatar_url,
+          })
+          .eq('id', order.id);
+        if (error) console.error("Error accepting order in Supabase:", error);
+      } catch (err) {
+        console.error("Failed to accept order in Supabase:", err);
+      }
+    }
+  }, [riderProfile]);
+
+  const handleRejectOrder = useCallback(async () => {
+    const currentPending = pendingOrder;
     setPendingOrder(null);
-    // Wait 5 seconds and generate another fresh order request
-    setTimeout(() => {
-      setPendingOrder(generateNewOrder());
-    }, 5000);
-  }, []);
 
-  const handleArrivedAtPickup = useCallback(() => {
+    if (currentPending) {
+      setRejectedOrderIds((prev) => [...prev, currentPending.id]);
+    }
+
+    if (!isSupabaseConfigured) {
+      setTimeout(() => {
+        setPendingOrder(generateNewOrder());
+      }, 5000);
+    }
+  }, [pendingOrder]);
+
+  const handleArrivedAtPickup = useCallback(async () => {
     if (activeOrder) {
-      setActiveOrder({
+      const updated: Order = {
         ...activeOrder,
         status: 'arrived_at_pickup',
-      });
+      };
+      setActiveOrder(updated);
       setCurrentScreen('pickup_verification');
+
+      if (isSupabaseConfigured) {
+        try {
+          const { error } = await supabase
+            .from('orders')
+            .update({ status: 'arrived_at_pickup' })
+            .eq('id', activeOrder.id);
+          if (error) console.error("Error updating order arrived status in Supabase:", error);
+        } catch (err) {
+          console.error("Failed to update status in Supabase:", err);
+        }
+      }
     }
   }, [activeOrder]);
 
-  const handleConfirmPickup = useCallback(() => {
+  const handleConfirmPickup = useCallback(async () => {
     if (activeOrder) {
-      setActiveOrder({
+      const updated: Order = {
         ...activeOrder,
         status: 'picked_up',
-      });
+      };
+      setActiveOrder(updated);
       setCurrentScreen('final_step');
+
+      if (isSupabaseConfigured) {
+        try {
+          const { error } = await supabase
+            .from('orders')
+            .update({ status: 'picked_up' })
+            .eq('id', activeOrder.id);
+          if (error) console.error("Error updating order picked up status in Supabase:", error);
+        } catch (err) {
+          console.error("Failed to update status in Supabase:", err);
+        }
+      }
     }
   }, [activeOrder]);
 
-  const handleCompleteDelivery = useCallback(() => {
+  const handleCompleteDelivery = useCallback(async () => {
     if (activeOrder) {
       const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const completedOrder: Order = {
@@ -316,48 +570,117 @@ export default function App() {
         note: `Delivered at ${timeStr}`
       };
       
-      // Update statistics
-      setTodayEarnings((prev) => prev + completedOrder.estPayout);
-      setCompletedDeliveries((prev) => prev + 1);
+      const newEarnings = todayEarnings + completedOrder.estPayout;
+      const newDeliveries = completedDeliveries + 1;
+      const hasCod = completedOrder.codAmount > 0;
+      const newCodWallet = cashInHand + (hasCod ? completedOrder.codAmount : 0);
+
+      setTodayEarnings(newEarnings);
+      setCompletedDeliveries(newDeliveries);
       setCompletedOrders((prev) => [completedOrder, ...prev]);
-      
-      if (completedOrder.codAmount > 0) {
-        setCashInHand((prev) => prev + completedOrder.codAmount);
-        
-        // Add transaction
-        const newTx: Transaction = {
-          id: 'tx-' + Date.now(),
-          type: 'cod_collected',
-          orderId: completedOrder.id,
-          details: `COD Collected - #ORD-${completedOrder.id.split('-')[0]}`,
-          time: `Today, ${timeStr}`,
-          amount: completedOrder.codAmount,
-        };
+      if (hasCod) {
+        setCashInHand(newCodWallet);
+      }
+
+      const txId = 'tx-' + Date.now();
+      const newTx: Transaction = {
+        id: txId,
+        type: 'cod_collected',
+        orderId: completedOrder.id,
+        details: `COD Collected - #ORD-${completedOrder.id.split('-')[0]}`,
+        time: `Today, ${timeStr}`,
+        amount: completedOrder.codAmount,
+      };
+
+      if (hasCod) {
         setTransactions((prev) => [newTx, ...prev]);
       }
 
       setActiveOrder(null);
       setCurrentScreen('dashboard');
 
-      // Schedule a new order dispatch in 8 seconds
-      setTimeout(() => {
-        setPendingOrder(generateNewOrder());
-      }, 8000);
-    }
-  }, [activeOrder]);
+      if (isSupabaseConfigured) {
+        try {
+          const { error: orderErr } = await supabase
+            .from('orders')
+            .update({
+              status: 'delivered',
+              note: `Delivered at ${timeStr}`
+            })
+            .eq('id', completedOrder.id);
+          if (orderErr) console.error("Error completing order in Supabase:", orderErr);
 
-  const handleClearCash = useCallback(() => {
+          const { error: riderErr } = await supabase
+            .from('riders')
+            .update({
+              today_earnings: newEarnings,
+              today_deliveries: newDeliveries,
+              cod_wallet: newCodWallet,
+            })
+            .eq('id', 'R-8088');
+          if (riderErr) console.error("Error updating rider stats in Supabase:", riderErr);
+
+          if (hasCod) {
+            const { error: txErr } = await supabase
+              .from('rider_transactions')
+              .insert({
+                id: txId,
+                rider_id: 'R-8088',
+                type: 'cod_collected',
+                order_id: completedOrder.id,
+                details: `COD Collected - #ORD-${completedOrder.id.split('-')[0]}`,
+                amount: completedOrder.codAmount,
+              });
+            if (txErr) console.error("Error inserting transaction in Supabase:", txErr);
+          }
+        } catch (err) {
+          console.error("Failed to complete delivery in Supabase:", err);
+        }
+      } else {
+        setTimeout(() => {
+          setPendingOrder(generateNewOrder());
+        }, 8000);
+      }
+    }
+  }, [activeOrder, todayEarnings, completedDeliveries, cashInHand]);
+
+  const handleClearCash = useCallback(async () => {
     if (cashInHand > 0) {
       const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const txId = 'tx-' + Date.now();
+      const amountToClear = cashInHand;
       const newTx: Transaction = {
-        id: 'tx-' + Date.now(),
+        id: txId,
         type: 'hub_submission',
         details: 'Hub Submission - North Zone',
         time: `Today, ${timeStr}`,
-        amount: -cashInHand,
+        amount: -amountToClear,
       };
       setTransactions((prev) => [newTx, ...prev]);
       setCashInHand(0);
+
+      if (isSupabaseConfigured) {
+        try {
+          const { error: riderErr } = await supabase
+            .from('riders')
+            .update({ cod_wallet: 0 })
+            .eq('id', 'R-8088');
+          if (riderErr) console.error("Error clearing rider wallet in Supabase:", riderErr);
+
+          const { error: txErr } = await supabase
+            .from('rider_transactions')
+            .insert({
+              id: txId,
+              rider_id: 'R-8088',
+              type: 'hub_submission',
+              details: 'Hub Submission - North Zone',
+              amount: -amountToClear,
+            });
+          if (txErr) console.error("Error inserting submission transaction in Supabase:", txErr);
+        } catch (err) {
+          console.error("Failed to clear cash in Supabase:", err);
+        }
+      }
     }
   }, [cashInHand]);
 
@@ -368,7 +691,7 @@ export default function App() {
         {currentScreen === 'dashboard' && (
           <Dashboard
             isOnline={isOnline}
-            setIsOnline={setIsOnline}
+            setIsOnline={handleToggleOnline}
             todayEarnings={todayEarnings}
             completedDeliveries={completedDeliveries}
             pendingOrder={pendingOrder}
@@ -422,6 +745,7 @@ export default function App() {
 
         {currentScreen === 'profile' && (
           <ProfileScreen
+            riderProfile={riderProfile}
             onBack={() => setCurrentScreen('dashboard')}
           />
         )}
