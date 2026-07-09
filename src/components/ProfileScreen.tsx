@@ -4,9 +4,10 @@ import { RiderProfile } from '../types';
 interface ProfileScreenProps {
   onBack: () => void;
   riderProfile: RiderProfile;
+  onLogout: () => void;
 }
 
-export default function ProfileScreen({ onBack, riderProfile }: ProfileScreenProps) {
+export default function ProfileScreen({ onBack, riderProfile, onLogout }: ProfileScreenProps) {
   return (
     <div className="flex flex-col w-full pb-28 relative min-h-screen">
       {/* Top App Bar */}
@@ -132,6 +133,20 @@ export default function ProfileScreen({ onBack, riderProfile }: ProfileScreenPro
             <div className="flex items-center gap-3 font-extrabold">
               <span className="material-symbols-outlined text-red-600 animate-pulse fill-1">emergency</span>
               <span>Emergency SOS Contact</span>
+            </div>
+            <span className="material-symbols-outlined text-red-600">chevron_right</span>
+          </button>
+        </section>
+
+        {/* Account Actions */}
+        <section className="bg-white border border-gray-100 rounded-2xl overflow-hidden">
+          <button 
+            onClick={onLogout}
+            className="w-full flex items-center justify-between p-4 hover:bg-red-50 text-left text-red-600 cursor-pointer text-xs font-bold"
+          >
+            <div className="flex items-center gap-3">
+              <span className="material-symbols-outlined text-red-600">logout</span>
+              <span>Log Out</span>
             </div>
             <span className="material-symbols-outlined text-red-600">chevron_right</span>
           </button>

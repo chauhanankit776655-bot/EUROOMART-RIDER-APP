@@ -7,6 +7,7 @@ import FinalStep from './components/FinalStep';
 import WalletScreen from './components/WalletScreen';
 import ProfileScreen from './components/ProfileScreen';
 import EarningsScreen from './components/EarningsScreen';
+import LoginScreen from './components/LoginScreen';
 import { supabase, isSupabaseConfigured } from './supabaseClient';
 
 // Helper to generate dynamic, realistic pending orders
@@ -259,6 +260,9 @@ const mapDbTransactionToFrontend = (dbTx: any): Transaction => {
 };
 
 export default function App() {
+  const [currentRiderId, setCurrentRiderId] = useState<string | null>(() => {
+    return localStorage.getItem('rider_id');
+  });
   const [isOnline, setIsOnline] = useState<boolean>(true);
   const [todayEarnings, setTodayEarnings] = useState<number>(845);
   const [completedDeliveries, setCompletedDeliveries] = useState<number>(12);
@@ -305,12 +309,13 @@ export default function App() {
 
   const fetchLatestOrders = useCallback(async () => {
     if (!isSupabaseConfigured) return;
+    if (!currentRiderId) return;
     try {
       // 1. Fetch active order
       const { data: activeData, error: activeErr } = await supabase
         .from('orders')
         .select('*')
-        .eq('rider_id', 'R-8088')
+        .eq('rider_id', currentRiderId)
         .in('status', ['accepted', 'arrived_at_pickup', 'picked_up'])
         .maybeSingle();
 
@@ -348,7 +353,7 @@ export default function App() {
       const { data: completedData, error: completedErr } = await supabase
         .from('orders')
         .select('*')
-        .eq('rider_id', 'R-8088')
+        .eq('rider_id', currentRiderId)
         .eq('status', 'delivered')
         .order('created_at', { ascending: false });
 
@@ -359,16 +364,17 @@ export default function App() {
     } catch (err) {
       console.error("Error fetching orders:", err);
     }
-  }, [rejectedOrderIds]);
+  }, [rejectedOrderIds, currentRiderId]);
 
   const fetchRiderProfileAndTransactions = useCallback(async () => {
     if (!isSupabaseConfigured) return;
+    if (!currentRiderId) return;
     try {
       // 1. Fetch profile
       const { data: profileData, error: profileErr } = await supabase
         .from('riders')
         .select('*')
-        .eq('id', 'R-8088')
+        .eq('id', currentRiderId)
         .maybeSingle();
 
       if (profileErr) {
@@ -385,7 +391,7 @@ export default function App() {
       const { data: txData, error: txErr } = await supabase
         .from('rider_transactions')
         .select('*')
-        .eq('rider_id', 'R-8088')
+        .eq('rider_id', currentRiderId)
         .order('created_at', { ascending: false });
 
       if (txErr) {
@@ -396,11 +402,11 @@ export default function App() {
     } catch (err) {
       console.error("Error fetching rider profile & transactions:", err);
     }
-  }, []);
+  }, [currentRiderId]);
 
   // Supabase initial load and realtime subscription
   useEffect(() => {
-    if (isSupabaseConfigured) {
+    if (isSupabaseConfigured && currentRiderId) {
       fetchRiderProfileAndTransactions();
       fetchLatestOrders();
 
@@ -415,14 +421,14 @@ export default function App() {
         )
         .on(
           'postgres_changes',
-          { event: '*', schema: 'public', table: 'riders', filter: 'id=eq.R-8088' },
+          { event: '*', schema: 'public', table: 'riders', filter: `id=eq.${currentRiderId}` },
           () => {
             fetchRiderProfileAndTransactions();
           }
         )
         .on(
           'postgres_changes',
-          { event: '*', schema: 'public', table: 'rider_transactions', filter: 'rider_id=eq.R-8088' },
+          { event: '*', schema: 'public', table: 'rider_transactions', filter: `rider_id=eq.${currentRiderId}` },
           () => {
             fetchRiderProfileAndTransactions();
           }
@@ -433,7 +439,17 @@ export default function App() {
         supabase.removeChannel(dbChannel);
       };
     }
-  }, [fetchRiderProfileAndTransactions, fetchLatestOrders]);
+  }, [fetchRiderProfileAndTransactions, fetchLatestOrders, currentRiderId]);
+
+  // Mock mode sync effect
+  useEffect(() => {
+    if (!isSupabaseConfigured && currentRiderId) {
+      setRiderProfile((prev) => ({
+        ...prev,
+        id: currentRiderId,
+      }));
+    }
+  }, [currentRiderId]);
 
   // Generate initial pending order when online (Local Mock fallback loop)
   useEffect(() => {
@@ -460,18 +476,18 @@ export default function App() {
 
   const handleToggleOnline = useCallback(async (online: boolean) => {
     setIsOnline(online);
-    if (isSupabaseConfigured) {
+    if (isSupabaseConfigured && currentRiderId) {
       try {
         const { error } = await supabase
           .from('riders')
           .update({ status: online ? 'Active' : 'Offline' })
-          .eq('id', 'R-8088');
+          .eq('id', currentRiderId);
         if (error) console.error("Error updating online status in Supabase:", error);
       } catch (err) {
         console.error("Failed to update status in Supabase:", err);
       }
     }
-  }, []);
+  }, [currentRiderId]);
 
   const handleAcceptOrder = useCallback(async (order: Order) => {
     const accepted: Order = {
@@ -482,13 +498,13 @@ export default function App() {
     setPendingOrder(null);
     setCurrentScreen('navigation');
 
-    if (isSupabaseConfigured) {
+    if (isSupabaseConfigured && currentRiderId) {
       try {
         const { error } = await supabase
           .from('orders')
           .update({
             status: 'accepted',
-            rider_id: 'R-8088',
+            rider_id: currentRiderId,
             rider_name: riderProfile.name,
             rider_avatar: riderProfile.avatar_url,
           })
@@ -498,7 +514,7 @@ export default function App() {
         console.error("Failed to accept order in Supabase:", err);
       }
     }
-  }, [riderProfile]);
+  }, [riderProfile, currentRiderId]);
 
   const handleRejectOrder = useCallback(async () => {
     const currentPending = pendingOrder;
@@ -599,7 +615,7 @@ export default function App() {
       setActiveOrder(null);
       setCurrentScreen('dashboard');
 
-      if (isSupabaseConfigured) {
+      if (isSupabaseConfigured && currentRiderId) {
         try {
           const { error: orderErr } = await supabase
             .from('orders')
@@ -617,7 +633,7 @@ export default function App() {
               today_deliveries: newDeliveries,
               cod_wallet: newCodWallet,
             })
-            .eq('id', 'R-8088');
+            .eq('id', currentRiderId);
           if (riderErr) console.error("Error updating rider stats in Supabase:", riderErr);
 
           if (hasCod) {
@@ -625,7 +641,7 @@ export default function App() {
               .from('rider_transactions')
               .insert({
                 id: txId,
-                rider_id: 'R-8088',
+                rider_id: currentRiderId,
                 type: 'cod_collected',
                 order_id: completedOrder.id,
                 details: `COD Collected - #ORD-${completedOrder.id.split('-')[0]}`,
@@ -642,7 +658,7 @@ export default function App() {
         }, 8000);
       }
     }
-  }, [activeOrder, todayEarnings, completedDeliveries, cashInHand]);
+  }, [activeOrder, todayEarnings, completedDeliveries, cashInHand, currentRiderId]);
 
   const handleClearCash = useCallback(async () => {
     if (cashInHand > 0) {
@@ -659,19 +675,19 @@ export default function App() {
       setTransactions((prev) => [newTx, ...prev]);
       setCashInHand(0);
 
-      if (isSupabaseConfigured) {
+      if (isSupabaseConfigured && currentRiderId) {
         try {
           const { error: riderErr } = await supabase
             .from('riders')
             .update({ cod_wallet: 0 })
-            .eq('id', 'R-8088');
+            .eq('id', currentRiderId);
           if (riderErr) console.error("Error clearing rider wallet in Supabase:", riderErr);
 
           const { error: txErr } = await supabase
             .from('rider_transactions')
             .insert({
               id: txId,
-              rider_id: 'R-8088',
+              rider_id: currentRiderId,
               type: 'hub_submission',
               details: 'Hub Submission - North Zone',
               amount: -amountToClear,
@@ -682,7 +698,51 @@ export default function App() {
         }
       }
     }
-  }, [cashInHand]);
+  }, [cashInHand, currentRiderId]);
+
+  const handleLogout = useCallback(async () => {
+    if (isSupabaseConfigured && currentRiderId) {
+      try {
+        await supabase
+          .from('riders')
+          .update({ status: 'Offline' })
+          .eq('id', currentRiderId);
+      } catch (err) {
+        console.error("Error setting rider offline on logout:", err);
+      }
+    }
+    localStorage.removeItem('rider_id');
+    setCurrentRiderId(null);
+    setIsOnline(false);
+    setCurrentScreen('dashboard');
+  }, [currentRiderId]);
+
+  if (!currentRiderId) {
+    return (
+      <LoginScreen
+        onLogin={(id, profile) => {
+          localStorage.setItem('rider_id', id);
+          setCurrentRiderId(id);
+          if (profile) {
+            setRiderProfile(profile);
+            setTodayEarnings(Number(profile.today_earnings));
+            setCompletedDeliveries(profile.today_deliveries);
+            setCashInHand(Number(profile.cod_wallet));
+            setIsOnline(profile.status === 'Active');
+          } else {
+            setRiderProfile({
+              ...initialRiderProfile,
+              id: id,
+            });
+            setTodayEarnings(initialRiderProfile.today_earnings);
+            setCompletedDeliveries(initialRiderProfile.today_deliveries);
+            setCashInHand(initialRiderProfile.cod_wallet);
+            setIsOnline(initialRiderProfile.status === 'Active');
+          }
+        }}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#f8f9ff] text-[#0b1c30] flex flex-col items-center justify-start select-none">
@@ -747,6 +807,7 @@ export default function App() {
           <ProfileScreen
             riderProfile={riderProfile}
             onBack={() => setCurrentScreen('dashboard')}
+            onLogout={handleLogout}
           />
         )}
 
