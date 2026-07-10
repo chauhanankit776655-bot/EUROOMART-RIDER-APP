@@ -225,6 +225,48 @@ const initialRiderProfile: RiderProfile = {
   insurance_active: true
 };
 
+const getInitialStateForRider = (riderId: string | null) => {
+  if (!riderId) {
+    return {
+      profile: initialRiderProfile,
+      earnings: 845,
+      deliveries: 12,
+      cash: 3240,
+      orders: initialCompletedOrders,
+    };
+  }
+
+  const isDemo = riderId === 'R-8088';
+  
+  const savedProfile = localStorage.getItem(`mock_profile_${riderId}`);
+  const savedEarnings = localStorage.getItem(`mock_earnings_${riderId}`);
+  const savedDeliveries = localStorage.getItem(`mock_deliveries_${riderId}`);
+  const savedCash = localStorage.getItem(`mock_cash_${riderId}`);
+  const savedOrders = localStorage.getItem(`mock_orders_${riderId}`);
+
+  const profile = savedProfile ? JSON.parse(savedProfile) : {
+    ...initialRiderProfile,
+    id: riderId,
+    name: isDemo ? 'Vikram Singh' : `Rider ${riderId}`,
+    email: isDemo ? 'rider@euromart.com' : `rider_${riderId.toLowerCase()}@euromart.com`,
+    vehicle_number: isDemo ? 'KA-03-HA-1234' : `KA-03-XX-${Math.floor(1000 + Math.random() * 9000)}`,
+    today_earnings: isDemo ? 845 : 0,
+    today_deliveries: isDemo ? 12 : 0,
+    cod_wallet: isDemo ? 3240 : 0,
+    rating: isDemo ? 4.95 : 5.0,
+    acceptance_rate: isDemo ? 98.5 : 100,
+    weekly_online_hours: isDemo ? '34h 15m' : '0h 0m',
+  };
+
+  return {
+    profile,
+    earnings: savedEarnings ? Number(savedEarnings) : (isDemo ? 845 : 0),
+    deliveries: savedDeliveries ? Number(savedDeliveries) : (isDemo ? 12 : 0),
+    cash: savedCash ? Number(savedCash) : (isDemo ? 3240 : 0),
+    orders: savedOrders ? JSON.parse(savedOrders) : (isDemo ? initialCompletedOrders : []),
+  };
+};
+
 const mapDbOrderToFrontend = (dbOrder: any): Order => {
   return {
     id: dbOrder.id,
@@ -263,16 +305,19 @@ export default function App() {
   const [currentRiderId, setCurrentRiderId] = useState<string | null>(() => {
     return localStorage.getItem('rider_id');
   });
+
+  const initialStates = getInitialStateForRider(currentRiderId);
+
   const [isOnline, setIsOnline] = useState<boolean>(true);
-  const [todayEarnings, setTodayEarnings] = useState<number>(845);
-  const [completedDeliveries, setCompletedDeliveries] = useState<number>(12);
-  const [completedOrders, setCompletedOrders] = useState<Order[]>(initialCompletedOrders);
-  const [cashInHand, setCashInHand] = useState<number>(3240);
+  const [todayEarnings, setTodayEarnings] = useState<number>(initialStates.earnings);
+  const [completedDeliveries, setCompletedDeliveries] = useState<number>(initialStates.deliveries);
+  const [completedOrders, setCompletedOrders] = useState<Order[]>(initialStates.orders);
+  const [cashInHand, setCashInHand] = useState<number>(initialStates.cash);
   const [currentScreen, setCurrentScreen] = useState<ScreenType>('dashboard');
   
   const [activeOrder, setActiveOrder] = useState<Order | null>(null);
   const [pendingOrder, setPendingOrder] = useState<Order | null>(null);
-  const [riderProfile, setRiderProfile] = useState<RiderProfile>(initialRiderProfile);
+  const [riderProfile, setRiderProfile] = useState<RiderProfile>(initialStates.profile);
   const [rejectedOrderIds, setRejectedOrderIds] = useState<string[]>([]);
 
   // Hardcoded initial transactions matching the screens
@@ -441,15 +486,40 @@ export default function App() {
     }
   }, [fetchRiderProfileAndTransactions, fetchLatestOrders, currentRiderId]);
 
-  // Mock mode sync effect
+  // Mock mode state persistence
   useEffect(() => {
     if (!isSupabaseConfigured && currentRiderId) {
-      setRiderProfile((prev) => ({
-        ...prev,
-        id: currentRiderId,
-      }));
+      localStorage.setItem(`mock_profile_${currentRiderId}`, JSON.stringify(riderProfile));
+      localStorage.setItem(`mock_earnings_${currentRiderId}`, todayEarnings.toString());
+      localStorage.setItem(`mock_deliveries_${currentRiderId}`, completedDeliveries.toString());
+      localStorage.setItem(`mock_cash_${currentRiderId}`, cashInHand.toString());
+      localStorage.setItem(`mock_orders_${currentRiderId}`, JSON.stringify(completedOrders));
     }
-  }, [currentRiderId]);
+  }, [isSupabaseConfigured, currentRiderId, riderProfile, todayEarnings, completedDeliveries, cashInHand, completedOrders]);
+
+  // Sync online status and statistics to profile in mock mode
+  useEffect(() => {
+    if (!isSupabaseConfigured && currentRiderId) {
+      setRiderProfile((prev) => {
+        const nextStatus = isOnline ? 'Active' : 'Offline';
+        if (
+          prev.status === nextStatus &&
+          prev.today_earnings === todayEarnings &&
+          prev.today_deliveries === completedDeliveries &&
+          prev.cod_wallet === cashInHand
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          status: nextStatus,
+          today_earnings: todayEarnings,
+          today_deliveries: completedDeliveries,
+          cod_wallet: cashInHand
+        };
+      });
+    }
+  }, [isOnline, todayEarnings, completedDeliveries, cashInHand, currentRiderId]);
 
   // Generate initial pending order when online (Local Mock fallback loop)
   useEffect(() => {
@@ -730,14 +800,13 @@ export default function App() {
             setCashInHand(Number(profile.cod_wallet));
             setIsOnline(profile.status === 'Active');
           } else {
-            setRiderProfile({
-              ...initialRiderProfile,
-              id: id,
-            });
-            setTodayEarnings(initialRiderProfile.today_earnings);
-            setCompletedDeliveries(initialRiderProfile.today_deliveries);
-            setCashInHand(initialRiderProfile.cod_wallet);
-            setIsOnline(initialRiderProfile.status === 'Active');
+            const riderStates = getInitialStateForRider(id);
+            setRiderProfile(riderStates.profile);
+            setTodayEarnings(riderStates.earnings);
+            setCompletedDeliveries(riderStates.deliveries);
+            setCashInHand(riderStates.cash);
+            setCompletedOrders(riderStates.orders);
+            setIsOnline(true);
           }
         }}
       />
